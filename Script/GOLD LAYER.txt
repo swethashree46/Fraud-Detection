@@ -1,0 +1,77 @@
+GOLD LAYER
+%scala
+
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.streaming.Trigger
+
+// 1. Read Silver stream
+val silverStream = spark.readStream
+  .format("delta")
+  .table("fraud_detection.silver_transactions")
+
+// 2. Aggregate with watermark
+val goldStream = silverStream
+  .withWatermark("timestamp", "20 minutes")
+  .groupBy(
+    window(col("timestamp"), "10 minutes", "5 minutes"),
+    col("customer_id")
+  )
+  .agg(
+    count("*").alias("txn_count"),
+    sum("amount").alias("total_amount"),
+    avg("normalized_amount").alias("avg_normalized_amount"),
+    max("geo_mismatch").alias("geo_mismatch_flag"),
+    max("is_high_risk_type").alias("high_risk_type_flag"),
+    max("is_high_risk_merchant").alias("high_risk_merchant_flag")
+  )
+
+// 3. Add rule-based risk score
+val scoredGoldStream = goldStream
+  .withColumn("risk_score",
+    col("txn_count") * 0.3 +
+    col("geo_mismatch_flag") * 0.5 +
+    col("high_risk_type_flag") * 0.7 +
+    col("high_risk_merchant_flag") * 0.9
+  )
+  .withColumn("is_high_risk", when(col("risk_score") > 1.5, lit(1)).otherwise(lit(0)))
+
+// 4. Write Gold table
+scoredGoldStream.writeStream
+  .format("delta")
+  .option("checkpointLocation", "/mnt/checkpoints/gold_transactions")
+  .outputMode("append")
+  .queryName("gold_txn_stream")
+  .trigger(Trigger.ProcessingTime("10 seconds"))
+  .table("fraud_detection.gold_transactions")
+
+
+%scala
+
+val eventHubConnectionString = "<AZURE_EVENT_HUB_CONNECTION_STRING>"
+val eventHubName = "high-risk-alerts"
+
+val eventHubConfig = Map(
+  "eventhubs.connectionString" -> eventHubConnectionString,
+   "eventhubs.name" -> eventHubName)
+
+
+%scala
+
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.streaming.Trigger
+
+// Filter high-risk transactions
+val highRiskStream = scoredGoldStream.filter(col("is_high_risk") === 1)
+
+// Convert to JSON for Event Hub
+val alertStream = highRiskStream.select(to_json(struct("*")).alias("body"))
+
+// Write to Event Hub
+alertStream.writeStream
+  .format("eventhubs")
+  .options(eventHubConfig)
+  .option("checkpointLocation", "/mnt/checkpoints/high_risk_alerts")
+  .outputMode("append")
+  .trigger(Trigger.ProcessingTime("10 seconds"))
+ 
+

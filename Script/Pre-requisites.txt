@@ -1,0 +1,26 @@
+Pre-requisites
+
+%scala
+println("Cluster is ready! Spark version: " + spark.version)
+
+%scala
+// Event Hub configuration
+val eventHubConfig = Map(
+  "eventhubs.connectionString" -> "<AZURE_EVENT_HUB_CONNECTION_STRING>"
+)
+
+// Just print to verify config
+println("Event Hub config loaded successfully!")
+
+
+%pip install azure-eventhub
+
+
+dbutils.library.restartPython()
+
+%pip install --upgrade typing_extensions azure-eventhub==5.11.4
+
+
+%python
+import azure.eventhub
+print("Azure Event Hub SDK installed successfully!")
